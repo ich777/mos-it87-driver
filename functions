@@ -1,0 +1,190 @@
+#!/bin/bash
+
+# Import MOS functions
+. /usr/local/lib/functions/mos-common
+
+# Set HEADER if GitHub Token is specified
+GH_TOKEN=$(jq -r '.github // empty' /boot/config/system/tokens.json 2>/dev/null)
+if [ ! -z "$GH_TOKEN" ] ; then
+  TOKEN="$(decrypt_password "$GH_TOKEN" "tokens")"
+  HEADER=(--header "Authorization: Bearer $TOKEN")
+else
+  HEADER=()
+fi
+
+# Set Architecture
+if [ "$(get_arch)" == "amd64" ] ; then
+  ARCHITECTURE="_amd64"
+elif [ "$(get_arch)" == "arm64" ] ; then
+  ARCHITECTURE="_arm64"
+fi
+
+# Set variables for plugin
+PLG_NAME="it87-driver"
+DISPLAY_NAME="IT87 Driver"
+PLG_DIR="/boot/optional/plugins/$PLG_NAME"
+DRV_TMP_DIR="/var/mos/mos-plugins"
+DRV_PLG_DIR="/boot/optional/drivers/$PLG_NAME"
+
+# Asset download function with md5 check
+download_asset() {
+  mkdir -p $DRV_DIR
+  curl --progress-bar -L \
+    "${HEADER[@]}" \
+    --header "Accept: application/octet-stream" \
+    --header "X-GitHub-Api-Version: 2022-11-28" \
+    --output "$DRV_DIR/$1" \
+    "https://api.github.com/repos/ich777/mos-addon-drivers/releases/assets/$2"
+
+  if [[ "$1" == *.md5 ]]; then
+    if [ "$(md5sum $DRV_DIR/${1%.*} | awk '{print $1}')" != "$(cat $DRV_DIR/$1 | awk '{print $1}')" ] ; then
+      return 1
+    else
+      return 0
+    fi
+  fi
+}
+
+# Download driver json from mos-addon-drivers
+download_driver_json() {
+  mkdir -p /var/mos/mos-drivers
+  curl -s --request GET \
+    --url "https://api.github.com/repos/ich777/mos-addon-drivers/releases/tags/$1" \
+    "${HEADER[@]}" \
+    --header "X-GitHub-Api-Version: 2022-11-28" \
+    -o /var/mos/mos-drivers/drivers-$1.json
+  EXIT_STATUS=$?
+  if [ "$EXIT_STATUS" != "0" ] ; then
+    exit 1
+  fi
+}
+
+# Check if driver json from mos-addon-drivers is in place and if it's younger than five minutes
+get_releases() {
+  if [ ! -f /var/mos/mos-drivers/drivers-$1.json ] ; then
+    download_driver_json "$1"
+  else
+    CURENTTIME=$(date +%s)
+    FILETIME=$(stat /var/mos/mos-drivers/drivers-$UNAME.json -c %Y)
+    DIFF=$(expr $CURENTTIME - $FILETIME)
+    CHK_TIMEOUT=300
+    if [ $DIFF -gt $CHK_TIMEOUT ] ; then
+      rm -f /var/mos/mos-drivers/drivers-$UNAME.json
+      download_driver_json "$1"
+    fi
+  fi
+}
+
+# Check for old Kernel directories in plugin driver directory
+check_old_kernel_directories() {
+  rm -rf $(ls -d $DRV_PLG_DIR/* 2>/dev/null | grep -v "$1")
+}
+
+# Check for wrong driver packages in driver directory
+check_old_drivers() {
+  rm -rf $(ls -d $DRV_DIR/* 2>/dev/null | grep -v "$1")
+}
+
+# Install driver function
+install_driver() {
+  DRIVER_DEB=$(ls -1 $DRV_DIR/*.deb | sort -V | tail -1)
+  DEBIAN_FRONTEND=noninteractive dpkg -i "$DRIVER_DEB" >/dev/null 2>&1
+  depmod --all
+  udevadm trigger
+  udevadm settle --timeout=15
+  modprobe it87
+}
+
+# Check if driver is locally available for running Kernel and install them
+check_deb() {
+  if ! ls -d $DRV_DIR/*.deb 2>/dev/null | grep -q "$1" ; then
+    return 1
+  else
+    return 0
+  fi
+}
+
+################################################
+# END OF DRIVER SPECIFIC PLUGIN BASE FUNCTIONS #
+################################################
+
+# Download function
+driver_download() {
+  # Set kernel version
+  if [ -z "$1" ] ; then
+    UNAME="$(uname -r)"
+  else
+    UNAME="$1"
+  fi
+  # Set Variables
+  DRIVER_PKG="it87"
+  DRV_DIR="$DRV_PLG_DIR/$UNAME"
+
+  # Check for old Kernel directories
+  if [ -z "$1" ] ; then
+    check_old_kernel_directories "$UNAME"
+  fi
+
+  # Check for old driver versions
+  check_old_drivers "$DRIVER_PKG"
+
+  # Get driver releases if not already downloaded
+  get_releases "$UNAME"
+
+  # Get driver names and assets from .deb and .md5
+  DRV_NAME=$(cat /var/mos/mos-drivers/drivers-${UNAME}.json | jq --arg driver_pkg "$DRIVER_PKG" --arg arch "$ARCHITECTURE" -r '.assets[] | select(.name | startswith($driver_pkg) and endswith($arch + ".deb")) | .name')
+  DRV_ASSET=$(cat /var/mos/mos-drivers/drivers-${UNAME}.json | jq --arg driver_pkg "$DRIVER_PKG" --arg arch "$ARCHITECTURE" -r '.assets[] | select(.name | startswith($driver_pkg) and endswith($arch + ".deb")) | .id')
+  DRV_NAME_MD5=$(cat /var/mos/mos-drivers/drivers-${UNAME}.json | jq --arg driver_pkg "$DRIVER_PKG" --arg arch "$ARCHITECTURE" -r '.assets[] | select(.name | startswith($driver_pkg) and endswith($arch + ".deb.md5")) | .name')
+  DRV_ASSET_MD5=$(cat /var/mos/mos-drivers/drivers-${UNAME}.json | jq --arg driver_pkg "$DRIVER_PKG" --arg arch "$ARCHITECTURE" -r '.assets[] | select(.name | startswith($driver_pkg) and endswith($arch + ".deb.md5")) | .id')
+
+  # Safety Check
+  if [ -z "$DRV_NAME" ] ; then
+    notify -t "Plugin" -m "Can't get driver for $DRIVER_PKG" "alert"
+    exit 1
+  fi
+
+  # Download asset and notify user
+  notify -t "Plugin" -m "Downloading IT87 package $DRIVER_PKG" -p "normal"
+  download_asset "$DRV_NAME" "$DRV_ASSET"
+  download_asset "$DRV_NAME_MD5" "$DRV_ASSET_MD5"
+  EXIT_STATUS=$?
+  if [ "$EXIT_STATUS" != "0" ] ; then
+    rm -rf $DRV_DIR
+    notify -t "Plugin" -m "IT87 package $DRIVER_PKG download failed" "alert"
+    exit 1
+  else
+    notify -t "Plugin" -m "IT87 package $DRIVER_PKG download successful" "normal"
+  fi
+}
+
+install() {
+  driver_download
+  install_driver
+}
+
+mos_start() {
+  # Set Variables
+  UNAME="$(uname -r)"
+  DRIVER_PKG="it87"
+  DRV_DIR="$DRV_PLG_DIR/$UNAME"
+
+  # Check for old Kernel versions
+  check_old_kernel_directories "$UNAME"
+
+  # Check if driver needs to be installed
+  if ! modinfo it87 >/dev/null 2>&1 ; then
+    # Execute functions
+    check_deb "$DRIVER_PKG"
+    EXIT_STATUS=$?
+    if [ "$EXIT_STATUS" != "0" ] ; then
+      driver_download
+      install_driver
+    else
+      install_driver
+    fi
+  fi
+}
+
+mos_osupdate() {
+  driver_download "$1"
+}

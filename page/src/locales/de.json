@@ -1,0 +1,10 @@
+{
+  "plugin_it87_driver": {
+    "title": "IT87 Treiber",
+    "description": "IT87 Treiberverwaltung",
+    "local_driver_package": "Lokal verfügbares Treiberpaket",
+    "plugin": "Plugin",
+    "kernel": "Kernel",
+    "package": "Paket"
+  }
+}
