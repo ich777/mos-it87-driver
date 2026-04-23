@@ -1,0 +1,102 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - '[0-9]*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '0.0.1'
+        required: true
+        default: '0.0.1'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Download IT87 icon
+        run: wget -O icon.png "https://raw.githubusercontent.com/ich777/docker-templates/master/ich777/images/ite.png" > icon.png
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build Vue plugin
+        working-directory: page
+        env:
+          PLUGIN_VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          npm install
+          npm run build
+
+      - name: Create package structure
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          PKG_NAME="it87-${VERSION}-1+mos-plugin"
+          PKG_DIR="${PKG_NAME}_amd64"
+
+          # Create directory structure
+          mkdir -p ${PKG_DIR}/var/www/mos-plugins/it87-driver
+          mkdir -p ${PKG_DIR}/DEBIAN
+
+          # Copy Vue plugin
+          cp -R page/dist/it87-driver/* ${PKG_DIR}/var/www/mos-plugins/it87-driver/
+
+          # Copy icon
+          if [ -f icon.png ]; then
+            cp icon.png ${PKG_DIR}/var/www/mos-plugins/it87-driver/
+          fi
+
+          # Create DEBIAN control file
+          cat > ${PKG_DIR}/DEBIAN/control << EOF
+          Package: it87-driver-plugin
+          Version: ${VERSION}-1+mos-plugin
+          Architecture: amd64
+          Maintainer: admin@minenet.at
+          Description: IT87 Driver Plugin for MOS
+          EOF
+
+      - name: Build .deb package
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          PKG_NAME="it87-${VERSION}-1+mos-plugin"
+          PKG_DIR="${PKG_NAME}_amd64"
+          DEB_FILE="${PKG_NAME}_amd64.deb"
+
+          dpkg-deb --build ${PKG_DIR}
+
+          # Generate MD5
+          md5sum ${DEB_FILE} | awk '{print $1}' > ${DEB_FILE}.md5
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: IT87 Driver ${{ steps.version.outputs.VERSION }}
+          body: |
+            ## IT87 Driver Plugin ${{ steps.version.outputs.VERSION }}
+
+          files: |
+            it87-${{ steps.version.outputs.VERSION }}-1+mos-plugin_amd64.deb
+            it87-${{ steps.version.outputs.VERSION }}-1+mos-plugin_amd64.deb.md5
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
