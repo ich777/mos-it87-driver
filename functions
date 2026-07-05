@@ -34,7 +34,7 @@ download_asset() {
     --header "Accept: application/octet-stream" \
     --header "X-GitHub-Api-Version: 2022-11-28" \
     --output "$DRV_DIR/$1" \
-    "https://api.github.com/repos/ich777/mos-addon-drivers/releases/assets/$2"
+    "https://api.github.com/repos/mos-nas/mos-addon-drivers/releases/assets/$2"
 
   if [[ "$1" == *.md5 ]]; then
     if [ "$(md5sum $DRV_DIR/${1%.*} | awk '{print $1}')" != "$(cat $DRV_DIR/$1 | awk '{print $1}')" ] ; then
@@ -49,7 +49,7 @@ download_asset() {
 download_driver_json() {
   mkdir -p /var/mos/mos-drivers
   curl -s --request GET \
-    --url "https://api.github.com/repos/ich777/mos-addon-drivers/releases/tags/$1" \
+    --url "https://api.github.com/repos/mos-nas/mos-addon-drivers/releases/tags/$1" \
     "${HEADER[@]}" \
     --header "X-GitHub-Api-Version: 2022-11-28" \
     -o /var/mos/mos-drivers/drivers-$1.json
